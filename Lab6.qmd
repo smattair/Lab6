@@ -8,16 +8,6 @@ execute:
 ---
 
 # Install Packages
-```{r}
-install.packages("powerjoin")
-install.packages("glue")
-install.packages("vip")
-install.packages("baguette")
-install.packages("ggthemes")
-install.packages("patchwork")
-install.packages("tidyr")
-install.packages("xgboost")
-```
 
 # Load packages
 ```{r}
