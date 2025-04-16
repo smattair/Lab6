@@ -1,0 +1,336 @@
+---
+project: 
+  title: "hyperparameter-tuning.qmd"
+  output-dir: docs
+  type: website
+format:
+  html:
+    self-contained: true
+---
+
+# Load Packages
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(readr)
+library(powerjoin)
+library(skimr)
+library(visdat)
+library(ggpubr)
+library(ggcorrplot)
+library(workflowsets)
+library(recipes)
+```
+
+```{r}
+# List all .txt files in the data folder
+data_files <- list.files("data", pattern = "\\.txt$", full.names = TRUE)
+
+# Read each file using read_delim and store in a list
+camels_list <- map(data_files, read_delim, delim = ";")
+
+# Join all data frames using power_full_join by gauge_id
+camels_data <- reduce(camels_list, power_full_join, by = "gauge_id")
+```
+```{r}
+# Look at structure of the combined data
+glimpse(camels_data)
+
+# Summarize the dataset
+skim(camels_data)
+
+# Visualize missing data
+vis_miss(camels_data)
+
+# Drop variables with more than 20% missing data
+camels_clean <- camels_data %>%
+  select(where(~ mean(!is.na(.)) > 0.8)) %>%
+  drop_na(q_mean)  # Ensure response variable is present
+
+# Look at correlation of numeric variables
+numeric_vars <- camels_clean %>% select(where(is.numeric))
+
+# Plot correlation matrix
+cor_matrix <- cor(numeric_vars, use = "complete.obs")
+ggcorrplot(cor_matrix, lab = TRUE, lab_size = 2.5)
+```
+
+```{r}
+# Set a seed for reproducibility
+set.seed(123)
+
+# Split the cleaned dataset: 80% training, 20% testing
+camels_split <- initial_split(camels_clean, prop = 0.8)
+
+# Extract training and testing sets
+camels_train <- training(camels_split)
+camels_test <- testing(camels_split)
+
+# Optional: check dimensions
+dim(camels_train)
+dim(camels_test)
+```
+
+```{r}
+library(recipes)
+
+recipe_data <- recipe(~ ., data = camels_data) %>%
+  step_zv(all_predictors()) %>%  # Remove zero variance predictors
+  step_novel(all_nominal()) %>%  # Handle new levels in categorical variables
+  step_unknown(all_nominal()) %>%  # Handle unknown levels in categorical variables
+  step_corr(all_predictors(), threshold = 0.9) %>%  # Remove highly correlated predictors
+  step_impute_median(all_numeric()) %>%  # Impute missing numeric values using median
+  step_impute_mode(all_nominal()) %>%  # Impute missing nominal values using mode
+  step_dummy(all_nominal(), -all_outcomes()) %>%  # Create dummy variables for nominal features
+  step_normalize(all_numeric())  # Normalize numeric predictors
+```
+
+
+```{r}
+library(tidymodels)
+
+# Clean the training data by removing rows with missing or infinite q_mean
+camels_train_cleaned <- camels_train %>%
+  filter(!is.na(q_mean) & !is.infinite(q_mean) & q_mean != -Inf & q_mean != Inf) %>%
+  drop_na()  # Drop any other rows with missing values
+
+library(recipes)
+
+camels_recipe <- recipe(runoff_ratio ~ ., data = camels_train) %>%
+  step_zv() %>%  # Remove predictors with zero variance
+  step_novel(all_nominal_predictors()) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+# Create 10-fold cross-validation folds
+camels_folds <- vfold_cv(camels_train_cleaned, v = 10)
+
+# Define model specifications without tuning
+lin_reg_spec <- linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+
+# Random Forest with fixed parameters
+rf_spec <- rand_forest(mtry = 3, trees = 500) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+
+# XGBoost with fixed parameters
+xgb_spec <- boost_tree(mtry = 3, trees = 500, learn_rate = 0.1) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+# Create the workflow set
+workflow_set <- workflow_set(
+  preproc = list(camels = camels_recipe),
+  models = list(
+    lin_reg = lin_reg_spec,
+    random_forest = rf_spec,
+    xgboost = xgb_spec
+  )
+)
+
+# Fit the workflows with cross-validation and evaluate using RMSE and R-squared
+results <- workflow_map(
+  workflow_set,
+  resamples = camels_folds,
+  metrics = metric_set(rmse, rsq),
+  verbose = TRUE
+)
+
+# Visualize resampling results
+autoplot(results)
+```
+
+Model Selection
+Based on the visualized metrics, select a model that you think best performs. Describe the reason for your choice using the metrics.
+
+I chose Boosted Trees because it has the lowest errors with cross-validation and has the highest R-squared.
+
+Describe the model you selected. What is the model type, engine, and mode. Why do you think it is performing well for this problem?
+
+Model Type: Boosted Trees
+Engine: xgboost
+Mode: regression
+It is performing well because XGBoost is good for non-linear relationships, interactions between predictors, dealing with missing values, and avoiding over fitting.
+
+```{r}
+library(tidymodels)
+
+# Tunable XGBoost model specification
+xgb_tune_spec <- boost_tree(
+  trees = 500,                        # fixed number of trees
+  mtry = tune(),                      # tunable: number of variables randomly selected
+  learn_rate = tune(),               # tunable: step size shrinkage
+  tree_depth = tune()                # tunable: max depth of trees
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+```
+
+```{r}
+library(workflows)
+
+# Create a workflow object combining the recipe and the tunable XGBoost model
+xgb_workflow <- workflow() %>%
+  add_model(xgb_tune_spec) %>%
+  add_recipe(camels_recipe)
+```
+
+```{r}
+# Load required library
+library(tune)
+
+# Extract tunable parameters and their ranges
+dials <- extract_parameter_set_dials(xgb_workflow)
+
+# View the parameter objects and their ranges
+dials$object
+```
+```{r}
+# Load required libraries
+library(tidymodels)
+library(dials)
+
+tune_spec <- rand_forest(
+  mtry = tune(),         # Number of predictors to sample
+  min_n = tune(),        # Minimum number of observations in a node
+  trees = 500            # Fixed number of trees
+) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+
+wf_tune <- workflow() %>%
+  add_recipe(camels_recipe) %>%
+  add_model(tune_spec)
+
+# Ensure the k-fold cross-validation folds are defined (e.g., camels_folds)
+camels_folds <- vfold_cv(camels_train_cleaned, v = 5)  # Example with 5-fold cross-validation
+
+# Extract tunable parameters from the workflow
+dials <- extract_parameter_set_dials(wf_tune)
+
+# Optional: If you're using mtry (which depends on number of predictors), finalize it:
+dials <- finalize(dials, camels_train_cleaned)
+
+# Now create the grid
+my.grid <- grid_space_filling(
+  dials,   # No need for $parameters
+  size = 25
+)
+
+# Tune the model using grid search
+model_params <- tune_grid(
+  wf_tune,
+  resamples = camels_folds,  # Ensure camels_folds is defined as your k-folds
+  grid = my.grid,  # Grid of hyperparameters
+  metrics = metric_set(rmse, rsq, mae),  # Define evaluation metrics
+  control = control_grid(save_pred = TRUE)  # Save predictions
+)
+
+# Visualize the tuning results
+autoplot(model_params)
+```
+
+```{r}
+collect_metrics(model_params)
+```
+
+```{r}
+library(dplyr)
+
+# View metrics ordered by lowest MAE (Mean Absolute Error)
+collect_metrics(model_params) %>%
+  filter(.metric == "mae") %>%
+  arrange(mean)
+```
+
+```{r}
+show_best(model_params, metric = "mae")
+```
+```{r}
+hp_best <- select_best(model_params, metric = "mae")
+```
+
+```{r}
+final_wf <- finalize_workflow(
+  wf_tune,
+  hp_best
+)
+```
+
+```{r}
+final_fit <- last_fit(
+  final_wf,        # your finalized workflow
+  split = camels_split  # original data split from initial_split()
+)
+```
+
+```{r}
+metrics_test <- collect_metrics(final_fit)
+print(metrics_test)
+```
+```{r}
+predictions_test <- collect_predictions(final_fit)
+```
+
+```{r}
+library(ggplot2)
+
+# Create scatter plot with actual vs predicted values
+ggplot(predictions_test, aes(x = runoff_ratio, y = .pred)) +
+  geom_point(aes(color = runoff_ratio), alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  geom_abline(intercept = 0, slope = 1, color = "red") +
+  scale_color_viridis_c() +
+  labs(
+    title = "Predicted vs Actual Values",
+    x = "Actual Values (Runoff Ratio)",
+    y = "Predicted Values"
+  ) +
+  theme_minimal()
+```
+```{r}
+camels_data_clean <- camels_data %>%
+  filter(!is.na(runoff_ratio))
+```
+
+
+```{r}
+# Fit the finalized workflow to the full cleaned data
+final_fit_full <- fit(final_wf, data = camels_data_clean)
+```
+```{r}
+library(broom)
+augmented_preds <- augment(final_fit_full, new_data = camels_data_clean)
+```
+
+```{r}
+library(dplyr)
+augmented_preds <- augmented_preds %>%
+  mutate(residual = (.pred - runoff_ratio)^2)  # or .pred - runoff_ratio for raw residuals
+```
+
+```{r}
+library(ggplot2)
+library(patchwork)
+
+# Prediction map
+pred_map <- ggplot(augmented_preds, aes(x = gauge_lon, y = gauge_lat, color = .pred)) +
+  geom_point(size = 2) +
+  scale_color_viridis_c(option = "C") +
+  labs(title = "Predicted Runoff Ratio", color = "Prediction") +
+  theme_minimal()
+
+# Residual map
+resid_map <- ggplot(augmented_preds, aes(x = gauge_lon, y = gauge_lat, color = residual)) +
+  geom_point(size = 2) +
+  scale_color_viridis_c(option = "A") +
+  labs(title = "Residuals (Squared)", color = "Residual") +
+  theme_minimal()
+
+# Combine with patchwork
+pred_map + resid_map
+```
+
