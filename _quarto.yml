@@ -1,12 +1,18 @@
 project:
   type: website
   output-dir: docs
+  
+website:  
   title: "Lab 6"
+  navbar: 
+    left:
+      - href: Lab6.qmd
+        text: Home
+      - href: hyperparameter-tuning.qmd
+        text: Second Page
 
 format:
   html:
     self-contained: true
     
-files:
-- Lab6.qmd
-- hyperparameter-tuning.qmd
+
