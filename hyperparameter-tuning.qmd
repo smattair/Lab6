@@ -1,14 +1,14 @@
 ---
-project: 
-  title: "hyperparameter-tuning.qmd"
-  output-dir: docs
-  type: website
-format:
-  html:
-    self-contained: true
+title: "Lab6"
+author: "Sierra Mattiar"
+date: "2025-04-4"
+format: html
+execute:
+  echo: true
 ---
 
 # Load Packages
+
 ```{r}
 library(tidyverse)
 library(tidymodels)
@@ -32,6 +32,7 @@ camels_list <- map(data_files, read_delim, delim = ";")
 # Join all data frames using power_full_join by gauge_id
 camels_data <- reduce(camels_list, power_full_join, by = "gauge_id")
 ```
+
 ```{r}
 # Look at structure of the combined data
 glimpse(camels_data)
@@ -84,7 +85,6 @@ recipe_data <- recipe(~ ., data = camels_data) %>%
   step_dummy(all_nominal(), -all_outcomes()) %>%  # Create dummy variables for nominal features
   step_normalize(all_numeric())  # Normalize numeric predictors
 ```
-
 
 ```{r}
 library(tidymodels)
@@ -143,17 +143,13 @@ results <- workflow_map(
 autoplot(results)
 ```
 
-Model Selection
-Based on the visualized metrics, select a model that you think best performs. Describe the reason for your choice using the metrics.
+Model Selection Based on the visualized metrics, select a model that you think best performs. Describe the reason for your choice using the metrics.
 
 I chose Boosted Trees because it has the lowest errors with cross-validation and has the highest R-squared.
 
 Describe the model you selected. What is the model type, engine, and mode. Why do you think it is performing well for this problem?
 
-Model Type: Boosted Trees
-Engine: xgboost
-Mode: regression
-It is performing well because XGBoost is good for non-linear relationships, interactions between predictors, dealing with missing values, and avoiding over fitting.
+Model Type: Boosted Trees Engine: xgboost Mode: regression It is performing well because XGBoost is good for non-linear relationships, interactions between predictors, dealing with missing values, and avoiding over fitting.
 
 ```{r}
 library(tidymodels)
@@ -188,6 +184,7 @@ dials <- extract_parameter_set_dials(xgb_workflow)
 # View the parameter objects and their ranges
 dials$object
 ```
+
 ```{r}
 # Load required libraries
 library(tidymodels)
@@ -249,6 +246,7 @@ collect_metrics(model_params) %>%
 ```{r}
 show_best(model_params, metric = "mae")
 ```
+
 ```{r}
 hp_best <- select_best(model_params, metric = "mae")
 ```
@@ -271,6 +269,7 @@ final_fit <- last_fit(
 metrics_test <- collect_metrics(final_fit)
 print(metrics_test)
 ```
+
 ```{r}
 predictions_test <- collect_predictions(final_fit)
 ```
@@ -291,16 +290,17 @@ ggplot(predictions_test, aes(x = runoff_ratio, y = .pred)) +
   ) +
   theme_minimal()
 ```
+
 ```{r}
 camels_data_clean <- camels_data %>%
   filter(!is.na(runoff_ratio))
 ```
 
-
 ```{r}
 # Fit the finalized workflow to the full cleaned data
 final_fit_full <- fit(final_wf, data = camels_data_clean)
 ```
+
 ```{r}
 library(broom)
 augmented_preds <- augment(final_fit_full, new_data = camels_data_clean)
@@ -333,4 +333,3 @@ resid_map <- ggplot(augmented_preds, aes(x = gauge_lon, y = gauge_lat, color = r
 # Combine with patchwork
 pred_map + resid_map
 ```
-
